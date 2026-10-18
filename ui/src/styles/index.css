@@ -72,17 +72,60 @@ body { font-family: Inter, system-ui, 'Segoe UI', sans-serif; color: #e6e9f5; ov
 /* ---- live graph ---- */
 .react-flow { background: transparent !important; }
 .react-flow__attribution { background: transparent !important; }
-.react-flow__controls { box-shadow: none !important; }
-.react-flow__controls-button { background: rgba(14,16,28,0.75) !important; border-color: var(--d-border) !important; fill: var(--d-text) !important; }
+.react-flow__controls {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  border: 1px solid var(--d-border) !important;
+}
+.react-flow__controls-button {
+  background: rgba(14,16,28,0.85) !important;
+  border-bottom: 1px solid var(--d-border) !important;
+  fill: var(--d-text) !important;
+  transition: background 0.15s, fill 0.15s;
+}
+.react-flow__controls-button:hover {
+  background: rgba(124,156,255,0.2) !important;
+  fill: #fff !important;
+}
+.react-flow__minimap {
+  background: rgba(14, 16, 28, 0.88) !important;
+  border: 1px solid var(--d-border) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(12px) !important;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+}
+.react-flow__minimap-mask {
+  fill: rgba(124, 156, 255, 0.08) !important;
+  stroke: var(--d-accent) !important;
+  stroke-width: 1.5px !important;
+}
 .gh { opacity: 0; pointer-events: none; }
 .gnode {
-  width: 200px; padding: 8px 10px; border-radius: 12px;
-  background: rgba(14,16,28,0.78); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+  width: 220px; padding: 10px 12px; border-radius: 12px;
+  background: rgba(14,16,28,0.82); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
   color: var(--d-text); backdrop-filter: blur(8px); cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.3s;
+  transition: border-color 0.2s, box-shadow 0.25s, opacity 0.25s, transform 0.2s;
 }
 .gnode:hover { border-color: var(--c); }
-.gnode-selected { border-color: var(--c); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 40%, transparent); }
+.gnode-selected { border-color: var(--c); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 50%, transparent); }
+.gnode-dimmed {
+  opacity: 0.15 !important;
+  filter: grayscale(60%) blur(0.2px);
+  pointer-events: auto;
+}
+.gnode-focused {
+  border-color: var(--c) !important;
+  box-shadow: 0 0 20px 2px color-mix(in srgb, var(--c) 50%, transparent) !important;
+  transform: scale(1.03);
+  z-index: 10 !important;
+}
+.gnode-hovered {
+  border-color: var(--c) !important;
+  box-shadow: 0 0 16px 1px color-mix(in srgb, var(--c) 40%, transparent) !important;
+  z-index: 9 !important;
+}
 .gnode-weak { --c: #ff6b81; animation: gnode-weak 2.2s ease-in-out infinite; }
 @keyframes gnode-weak {
   0%,100% { box-shadow: 0 0 6px 0 rgba(255,107,129,0.25); }
@@ -95,6 +138,14 @@ body { font-family: Inter, system-ui, 'Segoe UI', sans-serif; color: #e6e9f5; ov
   100% { transform: scale(1); box-shadow: 0 0 14px 2px color-mix(in srgb, var(--c) 60%, transparent); }
 }
 .react-flow__edge.edge-lit path { filter: drop-shadow(0 0 5px currentColor); animation: edge-lit 0.5s ease-out var(--delay) both; }
+.react-flow__edge.edge-focused path {
+  stroke-width: 2.5px !important;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+.react-flow__edge.edge-dimmed path {
+  opacity: 0.1 !important;
+  stroke: rgba(255,255,255,0.12) !important;
+}
 @keyframes edge-lit { from { stroke-opacity: 0.1; stroke-width: 1; } to { stroke-opacity: 1; stroke-width: 3; } }
 @media (prefers-reduced-motion: reduce) { .gnode-weak, .gnode-lit { animation: none; } }
 
