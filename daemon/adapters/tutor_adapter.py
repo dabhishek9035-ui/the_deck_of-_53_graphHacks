@@ -29,11 +29,11 @@ FALLBACK_QUESTIONS = {
     "infinite_loop": "What condition in your code guarantees that the loop advances toward the stopping condition on every iteration?",
     "array_indexing": "What are the legal index boundaries for an array of size N in this zero-indexed sequence?",
     "guess_and_check": "Let's pause. Before modifying another variable, what exact state caused the previous attempt to fail?",
-    "general": "Walk me through what you expect this part of the algorithm to do on the smallest input you can think of.",
+    "general": "Can you walk me through what you expect this part of the algorithm to do on the smallest input you can think of?",
 }
 
 
-def sanitize_final_output(question: str, mistake_id: Optional[str] = None) -> str:
+def sanitize_final_output(question: str, mistake_id: Optional[str] = None, require_question: bool = True) -> str:
     """Final independent safeguard against code leakage."""
     q = (question or "").strip()
     if not q or CODE_FENCE_RX.search(q):
@@ -42,6 +42,14 @@ def sanitize_final_output(question: str, mistake_id: Optional[str] = None) -> st
         if rx.search(q):
             log.warning("Daemon safeguard caught direct fix phrasing in output: %r", q)
             return FALLBACK_QUESTIONS.get(mistake_id or "general", FALLBACK_QUESTIONS["general"])
+    if require_question:
+        if q.count("?") > 1:
+            # Keep the final Socratic question sentence if multiple were generated
+            parts = [p.strip() for p in q.split("?") if p.strip()]
+            if parts:
+                q = parts[-1] + "?"
+        elif q.count("?") == 0:
+            q = q.rstrip(".! ") + "?"
     return q[:600]
 
 
@@ -80,24 +88,24 @@ class TutorAdapter:
 
         g = self.graph_adapter._get_graph()
         raw_output = None
-        query_ms = 0.0
+        query_ms = None
 
         if g:
             try:
                 from tutor.engine import handle_tutor
-                q_start = time.monotonic()
+                q_start = time.perf_counter()
                 raw_output = handle_tutor(
                     graph=g,
                     finding=finding,
                     student_id=student_id,
                     model=self.model,
                 )
-                query_ms = round((time.monotonic() - q_start) * 1000, 2)
+                query_ms = round((time.perf_counter() - q_start) * 1000, 2)
             except Exception:
                 log.exception("tutor.engine.handle_tutor failed; falling back to curated seed question")
 
         if not raw_output:
-            query_ms = round((time.monotonic() - t0) * 1000, 2)
+            query_ms = round((time.perf_counter() - t0) * 1000, 2)
             fallback_q = FALLBACK_QUESTIONS.get(mid, FALLBACK_QUESTIONS["general"])
             raw_output = {
                 "question": fallback_q,
@@ -127,32 +135,67 @@ class TutorAdapter:
         safe_q = sanitize_final_output(raw_output.get("question", ""), mid)
         raw_output["question"] = safe_q
 
-        # Ensure real measured query_ms is attached
+        # Ensure measured query_ms is attached if not already provided
         if "graph_trace" in raw_output and isinstance(raw_output["graph_trace"], dict):
-            raw_output["graph_trace"]["query_ms"] = query_ms
+            if raw_output["graph_trace"].get("query_ms") is None:
+                raw_output["graph_trace"]["query_ms"] = query_ms
 
         return raw_output
 
-    def handle_reply(self, text: str, student_id: str, last_finding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Process student answer to pet's Socratic question."""
-        mid = (last_finding or {}).get("mistake_id", "general")
-        concept = (last_finding or {}).get("concept_ids", ["logic"])[0] if (last_finding or {}).get("concept_ids") else "logic"
+    def handle_reply(
+        self,
+        text: str,
+        student_id: str,
+        last_finding: Optional[Dict[str, Any]] = None,
+        active_code: Optional[str] = None,
+        active_file: Optional[str] = None,
+        active_language: Optional[str] = None,
+        cursor: Optional[Dict[str, Any]] = None,
+        lesson: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Process student answer to pet's Socratic question dynamically via engine."""
+        g = self.graph_adapter._get_graph() if hasattr(self.graph_adapter, "_get_graph") else None
+        try:
+            from tutor.engine import handle_reply as _engine_reply
+        except ImportError:
+            from daemon.tutor.engine import handle_reply as _engine_reply
 
-        # Guide them to test their hypothesis
-        response_q = f"Interesting. If you run that thought on a single-element list, does that invariant hold?"
-        return {
-            "question": response_q,
-            "hint_level": 1,
-            "targets_concept": concept,
-            "mistake_id": mid,
-            "pet_state": "asking",
-            "graph_trace": {
-                "cypher": "MATCH (s:Student {id:$sid})-[:MADE]->(a:Attempt) RETURN s, a",
-                "query_ms": 2.1,
-                "nodes": [{"id": f"student:{student_id}", "label": "Student", "props": {"id": student_id}}],
-                "edges": [],
-            },
-        }
+        raw = _engine_reply(
+            text=text,
+            student_id=student_id,
+            last_finding=last_finding,
+            graph=g,
+            model=self.model,
+            active_code=active_code,
+            active_file=active_file,
+            active_language=active_language,
+            cursor=cursor,
+            lesson=lesson,
+        )
+        mid = (last_finding or {}).get("mistake_id")
+        raw["question"] = sanitize_final_output(raw.get("question", ""), mid)
+        return raw
+
+    def generate_idle_hint(
+        self,
+        active_code: str,
+        active_file: str,
+        lesson: Optional[Dict[str, Any]] = None,
+        student_id: str = "local-user",
+    ) -> Dict[str, Any]:
+        """Generate a non-question guiding hint based on active code via Socratic engine & Qwen model."""
+        try:
+            from tutor.engine import generate_idle_hint as _engine_idle_hint
+        except ImportError:
+            from daemon.tutor.engine import generate_idle_hint as _engine_idle_hint
+
+        return _engine_idle_hint(
+            active_code=active_code,
+            active_file=active_file,
+            lesson=lesson,
+            student_id=student_id,
+            model=self.model,
+        )
 
     def reset_recurrence(self, student_id: str, mistake_id: Optional[str] = None) -> None:
         """Called when student passes tests, lowering recurrence and hint level."""

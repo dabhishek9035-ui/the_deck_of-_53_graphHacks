@@ -19,5 +19,5 @@ window-vibrancy = "0.5"
 
 [profile.release]
 opt-level = "s"
-lto = true
+lto = false
 strip = true

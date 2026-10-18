@@ -57,19 +57,15 @@ def load_backends(cfg: Config) -> SimpleNamespace:
     """Import analysis/tutor/graph with adapters; fall back to stubs per module (config.mock.*)."""
     ns = SimpleNamespace()
 
-    # 1. Graph backend
-    if not cfg.mock.graph:
-        try:
-            from adapters.graph_adapter import GraphAdapter
-            g_adapter = GraphAdapter(host=cfg.falkordb.host, port=cfg.falkordb.port)
-            ns.graph = g_adapter
-            log.info("backend graph    -> GraphAdapter (FalkorDB %s:%s)", cfg.falkordb.host, cfg.falkordb.port)
-        except Exception as e:
-            log.warning("real graph adapter failed (%s); using stub", e)
-            ns.graph = importlib.import_module("mocks.graph_stub")
-    else:
-        ns.graph = importlib.import_module("mocks.graph_stub")
-        log.info("backend graph    -> stub")
+    # 1. Graph backend (FalkorDB is mandatory)
+    try:
+        from adapters.graph_adapter import GraphAdapter
+        g_adapter = GraphAdapter(host=cfg.falkordb.host, port=cfg.falkordb.port, require_falkordb=True)
+        ns.graph = g_adapter
+        log.info("backend graph    -> GraphAdapter (FalkorDB %s:%s)", cfg.falkordb.host, cfg.falkordb.port)
+    except Exception as e:
+        log.critical("FalkorDB is required! Failed to initialize GraphAdapter: %s", e)
+        raise RuntimeError(f"FalkorDB is required. Cannot start without active FalkorDB instance on {cfg.falkordb.host}:{cfg.falkordb.port}: {e}") from e
 
     # 2. Tutor backend
     if not cfg.mock.tutor:
@@ -152,6 +148,9 @@ class Pipeline:
         self._watch: asyncio.Task | None = None
         self._last_bubble_payload: dict | None = None
         self._latest_reviews: dict[str, dict] = {}
+        self._active_buffers: dict[str, dict] = {}
+        self._resolved_mistakes: dict[str, set[str]] = {}   # sid -> set of mistake_ids that were fixed
+        self._finding_code_snapshot: dict[str, str] = {}     # sid -> code when last finding was reported
 
     def get_review(self, design_id: str | None = None) -> dict | None:
         if design_id and design_id in self._latest_reviews:
@@ -171,10 +170,34 @@ class Pipeline:
 
     async def _idle_watch(self) -> None:
         while True:
-            await asyncio.sleep(15)
-            if not self._sleeping and time.time() - self.last_activity > self.cfg.sleep_after_seconds:
+            await asyncio.sleep(2)
+            now = time.time()
+            if self.paused:
+                continue
+
+            # Sleep after long inactivity (5 min)
+            if not self._sleeping and now - self.last_activity > self.cfg.sleep_after_seconds:
                 self._sleeping = True
                 await self.hub.to_ui("pet_state", {"state": "sleeping"})
+                continue
+
+            # 10-second stability check: If user typed code and paused for >= 10s, auto-analyze with Qwen model!
+            for sid, ab in list(self._active_buffers.items()):
+                file = ab.get("file")
+                content = ab.get("content")
+                edit_time = ab.get("last_edit_ts") or ab.get("ts", 0)
+                if not file or not content or not edit_time:
+                    continue
+
+                # Has the user stopped typing for at least 10 seconds?
+                idle_duration = now - edit_time
+                if idle_duration >= 10.0:
+                    last_analyzed = ab.get("last_analyzed_content")
+                    # Trigger if code differs from what was last analyzed and cooldown has passed
+                    if content != last_analyzed and (now - self._last_bubble > 5.0) and sid not in self._busy:
+                        ab["last_analyzed_content"] = content
+                        log.info("Student %s stable for %.1fs without typing; analyzing with Qwen: %s", sid, idle_duration, file)
+                        asyncio.create_task(self._auto_analyze_stable(sid, file, content, ab))
 
     # ---- lessons
     def find_lesson(self, file: str) -> dict | None:
@@ -235,6 +258,19 @@ class Pipeline:
         for d in ev.get("diagnostics") or []:
             d["message"] = redact(str(d.get("message", "")))
         log.debug("event %s %s", ev["type"], file)
+
+        if file:
+            ab = self._active_buffers.setdefault(sid, {})
+            ab["file"] = file
+            if ev.get("language"):
+                ab["language"] = ev["language"]
+            if ev.get("content"):
+                ab["content"] = ev["content"]
+            if ev.get("cursor"):
+                ab["cursor"] = ev["cursor"]
+            if ev.get("type") in ("edit", "focus"):
+                ab["last_edit_ts"] = time.time()
+            ab["ts"] = time.time()
 
         self.last_activity = time.time()
         if self._sleeping:
@@ -297,6 +333,17 @@ class Pipeline:
             lesson = self.find_lesson(file) if file else None
             await self._note_lesson(lesson)
 
+            # Detect if code changed since the last finding → mark old mistakes as resolved
+            current_content = next((e.get("content") for e in reversed(batch) if e.get("content")), "")
+            prev_snapshot = self._finding_code_snapshot.get(sid, "")
+            if current_content and prev_snapshot and current_content != prev_snapshot:
+                last_f = self._last_finding.get(sid)
+                if last_f:
+                    old_mid = last_f.get("mistake_id", "")
+                    if old_mid:
+                        self._resolved_mistakes.setdefault(sid, set()).add(old_mid)
+                        log.info("Marked mistake '%s' as resolved for student %s (code changed)", old_mid, sid)
+
             # System design markdown support (e.g. design.md)
             if file and file.lower().endswith(".md") and hasattr(self.b.analysis, "score_design"):
                 content = next((e.get("content") for e in reversed(batch) if e.get("content")), "")
@@ -313,6 +360,7 @@ class Pipeline:
                         asyncio.to_thread(self.b.tutor.handle, finding, sid),
                         self.cfg.llm_timeout_seconds))
                     self._last_finding[sid] = finding
+                    self._finding_code_snapshot[sid] = content
                     self._last_bubble = time.time()
                     self._seen[(sid, finding.get("mistake_id", ""))] = self._last_bubble
                     await self._emit(out, sid)
@@ -348,11 +396,86 @@ class Pipeline:
                 asyncio.to_thread(self.b.tutor.handle, finding, sid),
                 self.cfg.llm_timeout_seconds))
             self._last_finding[sid] = finding
+            self._finding_code_snapshot[sid] = current_content
             self._last_bubble = time.time()
             self._seen[(sid, finding.get("mistake_id", ""))] = self._last_bubble
             await self._emit(out, sid)
         except Exception:
             log.exception("pipeline failure")
+            await self.hub.to_ui("pet_state", {"state": "idle"})
+        finally:
+            self._busy.discard(sid)
+
+    async def _auto_analyze_stable(self, sid: str, file: str, content: str, ab: dict) -> None:
+        """When student stops typing for 10 seconds, analyze their code in the active file and offer a guiding hint."""
+        if sid in self._busy:
+            return
+        self._busy.add(sid)
+        try:
+            await self.hub.to_ui("pet_state", {"state": "thinking"})
+            lesson = self.find_lesson(file) if file else None
+            lang = ab.get("language") or "python"
+
+            batch = [{
+                "type": "edit",
+                "file": file,
+                "content": content,
+                "language": lang,
+                "student_id": sid,
+                "cursor": ab.get("cursor"),
+                "ts": ab.get("ts", time.time()),
+            }]
+
+            raw = await asyncio.wait_for(
+                asyncio.to_thread(self.b.analysis.analyze, batch, lesson),
+                self.cfg.llm_timeout_seconds,
+            )
+            findings = [as_dict(f) for f in (raw or [])]
+            finding = self._pick(findings, sid)
+
+            # Generate non-question guiding hint directly for the desktop pet bubble
+            try:
+                fn_hint = getattr(self.b.tutor, "generate_idle_hint", None)
+                if fn_hint:
+                    out = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            fn_hint,
+                            content,
+                            file,
+                            lesson=lesson,
+                            student_id=sid,
+                        ),
+                        self.cfg.llm_timeout_seconds,
+                    )
+                else:
+                    from tutor.engine import get_smart_code_hint
+                    hint_msg = get_smart_code_hint(content, (lesson or {}).get("id", ""))
+                    out = {
+                        "question": hint_msg,
+                        "text": hint_msg,
+                        "hint_level": 1,
+                        "targets_concept": (lesson or {}).get("concepts", ["logic"])[0] if lesson else "logic",
+                        "mistake_id": "idle_guidance",
+                        "pet_state": "curious",
+                    }
+            except Exception:
+                from tutor.engine import get_smart_code_hint
+                hint_msg = get_smart_code_hint(content, (lesson or {}).get("id", ""))
+                out = {
+                    "question": hint_msg,
+                    "text": hint_msg,
+                    "hint_level": 1,
+                    "targets_concept": (lesson or {}).get("concepts", ["logic"])[0] if lesson else "logic",
+                    "mistake_id": "idle_guidance",
+                    "pet_state": "curious",
+                }
+
+            out = as_dict(out)
+            self._last_bubble = time.time()
+            # Send ONLY to desktop pet bubble and UI websocket (to_sidebar=False)
+            await self._emit(out, sid, to_sidebar=False)
+        except Exception:
+            log.exception("auto-analysis on stable pause failed")
             await self.hub.to_ui("pet_state", {"state": "idle"})
         finally:
             self._busy.discard(sid)
@@ -363,6 +486,7 @@ class Pipeline:
             if f.get("kind") == "guess_spam":
                 return f
 
+        resolved = self._resolved_mistakes.get(sid, set())
         now = time.time()
         if now - self._last_bubble < self.cfg.cooldowns.bubble_seconds:
             log.info("bubble cooldown active; skipping %d finding(s)", len(findings))
@@ -370,15 +494,22 @@ class Pipeline:
         for f in sorted(findings, key=lambda f: f.get("confidence", 0), reverse=True):
             if f.get("confidence", 1) < self.cfg.min_confidence:
                 continue
-            if now - self._seen.get((sid, f.get("mistake_id", "")), 0) < self.cfg.cooldowns.same_mistake_minutes * 60:
+            mid = f.get("mistake_id", "")
+            # Skip mistakes the student already fixed (code changed since the finding was reported)
+            if mid in resolved:
+                log.info("skipping resolved mistake '%s' for student %s", mid, sid)
+                continue
+            if now - self._seen.get((sid, mid), 0) < self.cfg.cooldowns.same_mistake_minutes * 60:
                 continue
             return f
         return None
 
-    async def _emit(self, out: dict, sid: str) -> None:
+    async def _emit(self, out: dict, sid: str, to_sidebar: bool = True) -> None:
         from adapters.tutor_adapter import sanitize_final_output
-        q = sanitize_final_output(out.get("question", ""), out.get("mistake_id"))
+        is_q = to_sidebar and out.get("pet_state") != "celebrating"
+        q = sanitize_final_output(out.get("text") or out.get("question", ""), out.get("mistake_id"), require_question=is_q)
         out["question"] = q
+        out["text"] = q
         pet_st = out.get("pet_state", "asking")
         await self.hub.to_ui("pet_state", {"state": pet_st})
 
@@ -414,46 +545,116 @@ class Pipeline:
             },
         })
 
-        await self.hub.to_editor("show_hint", text=q, hint_level=out.get("hint_level", 0),
-                                 concept=out.get("targets_concept"))
+        if to_sidebar:
+            await self.hub.to_editor("show_hint", text=q, hint_level=out.get("hint_level", 0),
+                                     concept=out.get("targets_concept"))
         try:
-            progress = await asyncio.to_thread(self.b.graph.get_progress, sid)
+            tc = out.get("targets_concept") or "binary_search"
+            is_celebrating = out.get("pet_state") == "celebrating"
+            is_mistake = bool(out.get("mistake_id") and out.get("mistake_id") != "general")
+            passed = is_celebrating or not is_mistake
+            delta = 0.10 if is_celebrating else (-0.05 if is_mistake else 0.05)
+
+            # Persist real mastery score in FalkorDB
+            if hasattr(self.b, "graph") and self.b.graph:
+                try:
+                    await asyncio.to_thread(self.b.graph.update_mastery, sid, tc, passed)
+                except Exception:
+                    pass
+
+            try:
+                progress = await asyncio.to_thread(self.b.graph.get_progress, sid, mode=self._mode)
+            except TypeError:
+                progress = await asyncio.to_thread(self.b.graph.get_progress, sid)
             if progress:
                 concepts = progress.get("concepts", [])
-                tc = out.get("targets_concept")
                 matched = next((c for c in concepts if c.get("id") == tc), concepts[0] if concepts else None)
                 if matched:
                     await self.hub.to_ui("mastery_update", {
-                        "concept_id": matched.get("id", "array_indexing"),
+                        "concept_id": matched.get("id", tc),
                         "mastery": matched.get("mastery", 0.5),
-                        "delta": -0.05,
+                        "delta": delta,
                         "evolution": progress.get("evolution"),
                     })
         except Exception:
             log.debug("mastery update unavailable", exc_info=True)
 
     # ---- typed or spoken reply (same path)
-    async def handle_reply(self, text: str, sid: str, source: str = "typed") -> dict:
+    async def handle_reply(
+        self,
+        text: str,
+        sid: str,
+        source: str = "typed",
+        file: str | None = None,
+        content: str | None = None,
+        language: str | None = None,
+        cursor: dict | None = None,
+        selection: dict | None = None,
+    ) -> dict:
         text = redact(text or "").strip()
-        log.info("reply (%s) student=%s: %.80s", source, sid, text)
+        log.info("reply (%s) student=%s file=%s: %.80s", source, sid, file, text)
         self.last_activity = time.time()
         await self.hub.to_ui("pet_state", {"state": "thinking"})
+
+        # Resolve active buffer context
+        ab = self._active_buffers.get(sid, {})
+        active_file = file or ab.get("file")
+        active_content = content or ab.get("content")
+        active_lang = language or ab.get("language")
+        active_cursor = cursor or ab.get("cursor")
+
+        # If file is known but content is missing, load it from disk
+        if active_file and not active_content:
+            try:
+                p = Path(active_file)
+                if p.is_file():
+                    active_content = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+        lesson = self.find_lesson(active_file) if active_file else None
         last = self._last_finding.get(sid)
         try:
             fn = getattr(self.b.tutor, "handle_reply", None)
             if fn:
-                out = await asyncio.wait_for(asyncio.to_thread(fn, text, sid, last), self.cfg.llm_timeout_seconds)
+                out = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        fn,
+                        text,
+                        sid,
+                        last,
+                        active_code=active_content,
+                        active_file=active_file,
+                        active_language=active_lang,
+                        cursor=active_cursor,
+                        lesson=lesson,
+                    ),
+                    self.cfg.llm_timeout_seconds,
+                )
             elif last:
                 out = await asyncio.wait_for(
                     asyncio.to_thread(self.b.tutor.handle, {**last, "student_reply": text}, sid),
-                    self.cfg.llm_timeout_seconds)
+                    self.cfg.llm_timeout_seconds,
+                )
             else:
-                out = {"question": "What are you trying to make this code do, in one sentence?",
-                       "hint_level": 0, "targets_concept": None, "mistake_id": None, "pet_state": "asking"}
+                out = {
+                    "question": "What are you trying to make this code do, in one sentence?",
+                    "hint_level": 0,
+                    "targets_concept": None,
+                    "mistake_id": None,
+                    "pet_state": "asking",
+                }
         except Exception:
             log.exception("reply failure")
             out = {"question": FALLBACK_Q, "hint_level": 0, "pet_state": "asking"}
         out = as_dict(out)
+        if out.get("pet_state") == "celebrating":
+            lid = (lesson or {}).get("id") or "binary-search"
+            try:
+                await asyncio.to_thread(self.b.graph.record_attempt, sid, lid, True)
+            except Exception:
+                pass
+            await self.hub.to_ui("confetti", {"reason": "question solved", "count": 100})
         await self._emit(out, sid)
         return out
 

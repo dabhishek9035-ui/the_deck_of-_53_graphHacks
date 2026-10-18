@@ -99,6 +99,11 @@ async def ws_ui(ws: WebSocket):
 class ReplyReq(BaseModel):
     text: str
     student_id: str | None = None
+    file: str | None = None
+    content: str | None = None
+    language: str | None = None
+    cursor: dict | None = None
+    selection: dict | None = None
 
 
 class InspectorReq(BaseModel):
@@ -131,8 +136,25 @@ def _backend_name(b: object) -> str:
 
 @app.get("/api/health")
 async def health():
+    falkor_ok = False
+    try:
+        g = getattr(backends, "graph", None)
+        if g and hasattr(g, "_client") and g._client:
+            falkor_ok = bool(g._client.connection.ping())
+        elif g and hasattr(g, "_get_graph"):
+            falkor_ok = g._get_graph() is not None
+    except Exception:
+        falkor_ok = False
+
+    if not falkor_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="FalkorDB is required! Socratic Code-Tutor Pet cannot operate without an active FalkorDB instance on localhost:6379."
+        )
+
     return {
         "ok": True,
+        "falkordb": "connected",
         "paused": pipeline.paused,
         "editors": len(hub.editors),
         "uis": len(hub.ui),
@@ -144,12 +166,25 @@ async def health():
 
 @app.post("/api/reply")
 async def reply(req: ReplyReq):
-    return await pipeline.handle_reply(req.text, req.student_id or cfg.default_student)
+    return await pipeline.handle_reply(
+        req.text,
+        req.student_id or cfg.default_student,
+        file=req.file,
+        content=req.content,
+        language=req.language,
+        cursor=req.cursor,
+        selection=req.selection,
+    )
 
 
 @app.get("/api/progress")
 async def progress(student_id: str | None = None):
-    return as_dict(await asyncio.to_thread(backends.graph.get_progress, student_id or cfg.default_student))
+    sid = student_id or cfg.default_student
+    try:
+        data = await asyncio.to_thread(backends.graph.get_progress, sid, mode=pipeline._mode)
+    except TypeError:
+        data = await asyncio.to_thread(backends.graph.get_progress, sid)
+    return as_dict(data)
 
 
 @app.get("/api/graph")

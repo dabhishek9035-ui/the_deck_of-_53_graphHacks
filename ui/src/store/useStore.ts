@@ -32,6 +32,10 @@ interface StoreState {
   mistakeRepeat: { id: string | null; count: number };
   issues: Record<string, number>; // contract warnings: what the daemon sent that deviates from the contract
 
+  bubbleOpen: boolean;
+  toggleBubble(): void;
+  openBubble(): void;
+  closeBubble(): void;
   reportIssues(list: string[]): void;
   setConnected(v: boolean): void;
   setProgress(p: Progress): void;
@@ -146,6 +150,11 @@ export const useStore = create<StoreState>((set, get) => ({
   events: [],
   mistakeRepeat: { id: null, count: 0 },
   issues: {},
+
+  bubbleOpen: true,
+  toggleBubble: () => set((s) => ({ bubbleOpen: !s.bubbleOpen })),
+  openBubble: () => set({ bubbleOpen: true }),
+  closeBubble: () => set({ bubbleOpen: false }),
 
   reportIssues: (list) => set((s) => {
     const issues = { ...s.issues };

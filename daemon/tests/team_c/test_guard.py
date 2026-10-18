@@ -98,6 +98,34 @@ class TestGuardCheckBlocksLeakyCode:
         assert not is_safe
         assert reason is not None
 
+    @pytest.mark.parametrize(
+        "non_question",
+        [
+            "The condition needs to include equality so the last element gets checked",
+            "Consider adding one to mid when the target is larger",
+            "You might want to check the array boundaries carefully.",
+            "This invariant fails on single element arrays.",
+        ],
+    )
+    def test_blocks_plain_english_non_questions(self, non_question: str):
+        is_safe, reason = guard_check(non_question)
+        assert not is_safe, f"Expected '{non_question}' to be blocked because it's not a question"
+        assert reason is not None
+        assert "not a question" in reason.lower() or "missing '?'" in reason.lower()
+
+    @pytest.mark.parametrize(
+        "multi_question",
+        [
+            "What happens when left == right? Does the loop continue?",
+            "What is mid? Why is it offset?",
+        ],
+    )
+    def test_blocks_multiple_questions(self, multi_question: str):
+        is_safe, reason = guard_check(multi_question)
+        assert not is_safe, f"Expected '{multi_question}' to be blocked because it contains multiple questions"
+        assert reason is not None
+        assert "multiple questions" in reason.lower()
+
 
 class TestGuardCheckAllowsSocraticQuestions:
     """Test suite ensuring legitimate Socratic guiding questions pass verification."""

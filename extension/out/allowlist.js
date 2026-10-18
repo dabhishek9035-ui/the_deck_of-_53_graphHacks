@@ -49,13 +49,19 @@ function real(p) {
         return path.resolve(p);
     }
 }
-/** True only for files inside an allowlisted folder, and never for obvious secret files. */
+/** True only for files inside lesson/{topic}/starter, and never for obvious secret files. */
 function isAllowed(file, folders) {
     const base = path.basename(file).toLowerCase();
     if (base.startsWith('.env') || base.endsWith('.pem') || base.endsWith('.key')) {
         return false;
     }
     const f = real(file);
+    const normalized = f.replace(/\\/g, '/');
+    // Must be inside a starter/ subfolder of a lesson topic
+    const isStarterFile = normalized.includes('/starter/') || normalized.endsWith('/starter');
+    if (!isStarterFile) {
+        return false;
+    }
     return folders.some((folder) => {
         const rel = path.relative(real(expandHome(folder)), f);
         return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));

@@ -144,3 +144,69 @@ class TestPatternMemory:
 
         assert result["recurrence_count"] == 1
         assert result["is_recurring"] is False
+
+
+class TestTutorEngineContracts:
+    """Test suite ensuring strict adherence to tutor engine contracts."""
+
+    def test_targets_concept_strictly_controlled_by_engine(self, monkeypatch):
+        """Verify LLM cannot overwrite targets_concept with hallucinated concepts."""
+        from daemon.tutor.engine import handle_tutor
+
+        mock_graph = MagicMock()
+        mock_graph.query.return_value = MockQueryResult([])
+
+        # Mock Ollama returning a hallucinated targets_concept
+        monkeypatch.setattr(
+            "daemon.tutor.engine._call_ollama_generate",
+            lambda *args, **kwargs: {
+                "question": "What happens when left == right?",
+                "targets_concept": "hallucinated_quantum_computing_concept",
+            },
+        )
+        monkeypatch.setattr(
+            "daemon.tutor.engine.hybrid_query",
+            lambda *args, **kwargs: {"query_ms": 1.23, "nodes": [], "edges": [], "chunks": []},
+        )
+
+        finding = {
+            "kind": "test_failure",
+            "mistake_id": "boundary_off_by_one",
+            "concept_ids": ["array_indexing"],
+            "file": "solution.py",
+            "line": 14,
+            "evidence": "IndexError",
+        }
+
+        output = handle_tutor(mock_graph, finding, student_id="local-user")
+        assert output["targets_concept"] == "array_indexing"
+        assert output["targets_concept"] != "hallucinated_quantum_computing_concept"
+        assert output["graph_trace"]["query_ms"] == 1.23
+
+    def test_query_ms_defaults_to_none_when_unmeasured(self, monkeypatch):
+        """Verify query_ms is None (null) when missing rather than defaulting to 0.0."""
+        from daemon.tutor.engine import handle_tutor
+
+        mock_graph = MagicMock()
+        mock_graph.query.return_value = MockQueryResult([])
+
+        monkeypatch.setattr(
+            "daemon.tutor.engine._call_ollama_generate",
+            lambda *args, **kwargs: {
+                "question": "What happens when the array is empty?",
+            },
+        )
+        # hybrid_query missing query_ms key
+        monkeypatch.setattr(
+            "daemon.tutor.engine.hybrid_query",
+            lambda *args, **kwargs: {"nodes": [], "edges": [], "chunks": []},
+        )
+
+        finding = {
+            "kind": "test_failure",
+            "mistake_id": "boundary_off_by_one",
+            "concept_ids": ["array_indexing"],
+        }
+
+        output = handle_tutor(mock_graph, finding, student_id="local-user")
+        assert output["graph_trace"]["query_ms"] is None

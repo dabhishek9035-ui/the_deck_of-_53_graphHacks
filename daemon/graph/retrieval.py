@@ -86,7 +86,7 @@ def hybrid_query(
             "chunks": List[Dict[str, Any]]
         }
     """
-    start_time = time.time()
+    start_time = time.perf_counter()
 
     # Step 1: Generate query embedding vector (768-dim)
     query_vector = embed_text(query_text)
@@ -190,7 +190,7 @@ def hybrid_query(
             "props": {"id": failed_concept_id},
         }
 
-    query_ms = round((time.time() - start_time) * 1000, 2)
+    query_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
     return {
         "cypher": executed_cypher,
@@ -228,7 +228,7 @@ def find_bottleneck(
             "edges": List[Dict[str, str]]
         }
     """
-    start_time = time.time()
+    start_time = time.perf_counter()
 
     cypher = f"""
     MATCH path = (failed:Concept {{id: $failed_concept_id}})-[:REQUIRES*1..{max_depth}]->(root:Concept)
@@ -284,7 +284,7 @@ def find_bottleneck(
         for i in range(len(path_ids) - 1):
             edges_set.add((path_ids[i], path_ids[i + 1], "REQUIRES"))
 
-    query_ms = round((time.time() - start_time) * 1000, 2)
+    query_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
     return {
         "failed_concept_id": failed_concept_id,
@@ -322,7 +322,7 @@ def query_pattern_memory(
             "lessons": List[str]
         }
     """
-    start_time = time.time()
+    start_time = time.perf_counter()
 
     if mistake_id:
         cypher = """
@@ -346,7 +346,7 @@ def query_pattern_memory(
             timestamps = [int(t) for t in row[1] if t is not None] if len(row) > 1 and row[1] else []
             lessons = [str(lid) for lid in row[2] if lid is not None] if len(row) > 2 and row[2] else []
 
-        query_ms = round((time.time() - start_time) * 1000, 2)
+        query_ms = round((time.perf_counter() - start_time) * 1000, 2)
         return {
             "student_id": student_id,
             "mistake_id": mistake_id,
@@ -389,7 +389,7 @@ def query_pattern_memory(
             "lessons": l_list,
         })
 
-    query_ms = round((time.time() - start_time) * 1000, 2)
+    query_ms = round((time.perf_counter() - start_time) * 1000, 2)
     return {
         "student_id": student_id,
         "mistake_id": None,

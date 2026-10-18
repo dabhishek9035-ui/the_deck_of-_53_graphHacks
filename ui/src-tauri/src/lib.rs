@@ -68,14 +68,14 @@ fn load_pos(app: &AppHandle) -> Option<SavedPos> {
     serde_json::from_str(&raw).ok()
 }
 
-/// True if a point 60px inside the window's top-left lies on some connected monitor.
+/// True if at least 250px of the pet window lies within a connected monitor.
 fn visible_on_some_monitor(app: &AppHandle, p: &SavedPos) -> bool {
-    let (px, py) = (p.x + 60, p.y + 60);
+    let (px, py) = (p.x, p.y);
     app.available_monitors()
         .map(|ms| {
             ms.iter().any(|m| {
                 let (mp, ms) = (m.position(), m.size());
-                px >= mp.x && py >= mp.y && px < mp.x + ms.width as i32 && py < mp.y + ms.height as i32
+                px >= mp.x && py >= mp.y && px + 250 <= mp.x + ms.width as i32 && py + 250 <= mp.y + ms.height as i32
             })
         })
         .unwrap_or(false)
@@ -86,8 +86,8 @@ fn default_pos(app: &AppHandle, win: &WebviewWindow) -> PhysicalPosition<i32> {
     if let Ok(Some(m)) = app.primary_monitor() {
         let (mp, ms) = (m.position(), m.size());
         return PhysicalPosition::new(
-            mp.x + ms.width as i32 - size.0 - EDGE_MARGIN,
-            mp.y + ms.height as i32 - size.1 - EDGE_MARGIN - TASKBAR_ALLOWANCE,
+            (mp.x + ms.width as i32 - size.0 - EDGE_MARGIN).max(mp.x),
+            (mp.y + ms.height as i32 - size.1 - EDGE_MARGIN - TASKBAR_ALLOWANCE).max(mp.y),
         );
     }
     PhysicalPosition::new(100, 100)
@@ -253,6 +253,7 @@ pub fn run() {
             place_pet(&handle, &pet, true);
             let _ = pet.set_ignore_cursor_events(true); // click-through until hit rects arrive
             pet.show()?;
+            let _ = pet.set_always_on_top(true);
 
             let h = handle.clone();
             pet.on_window_event(move |e| {

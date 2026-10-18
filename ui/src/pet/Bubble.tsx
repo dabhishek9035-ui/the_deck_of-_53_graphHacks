@@ -10,6 +10,9 @@ const humanize = (id: string) => id.replace(/_/g, ' ');
 // Never grabs focus on its own (the student is typing in VS Code); only clicks focus the input.
 export function Bubble() {
   const bubble = useStore((s) => s.bubble);
+  const bubbleOpen = useStore((s) => s.bubbleOpen);
+  const closeBubble = useStore((s) => s.closeBubble);
+  const openBubble = useStore((s) => s.openBubble);
   const hud = useStore((s) => s.mode === 'system_design');
   const at = bubble?.at;
 
@@ -20,22 +23,38 @@ export function Bubble() {
   const [listening, setListening] = useState(false);
   const [status, setStatus] = useState<'idle' | 'sending' | 'error'>('idle');
 
-  useEffect(() => { if (at) { setVisible(true); setStatus('idle'); } }, [at]);
+  useEffect(() => {
+    if (at) {
+      setVisible(true);
+      setStatus('idle');
+      openBubble();
+    }
+  }, [at, openBubble]);
 
   useEffect(() => {
-    if (!visible || focused || hover || draft || listening) return;
-    const t = setTimeout(() => setVisible(false), VISIBLE_MS);
+    if (!visible || !bubbleOpen || focused || hover || draft || listening) return;
+    const t = setTimeout(() => {
+      setVisible(false);
+      closeBubble();
+    }, VISIBLE_MS);
     return () => clearTimeout(t);
-  }, [visible, focused, hover, draft, listening, at]);
+  }, [visible, bubbleOpen, focused, hover, draft, listening, at, closeBubble]);
 
-  if (!bubble || !visible) return null;
+  if (!bubble || (!visible && !bubbleOpen)) return null;
   const q = bubble.data;
 
   const send = async () => {
     const text = draft.trim();
     if (!text || status === 'sending') return;
     setStatus('sending');
-    try { await api.reply(text); setDraft(''); setStatus('idle'); } catch { setStatus('error'); }
+    try {
+      await api.reply(text);
+      setDraft('');
+    } catch {
+      setStatus('error');
+    } finally {
+      setStatus('idle');
+    }
   };
 
   const toggleMic = async () => {
@@ -50,7 +69,12 @@ export function Bubble() {
       data-hit
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onKeyDown={(e) => { if (e.key === 'Escape') setVisible(false); }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          setVisible(false);
+          closeBubble();
+        }
+      }}
       className={`bubble-in relative w-[330px] rounded-2xl border bg-[rgba(14,16,28,0.82)] p-3 backdrop-blur-md ${hud ? 'border-[#33ff9c]/50 shadow-[0_0_24px_rgba(51,255,156,0.25)]' : 'border-white/15 shadow-glow'}`}
     >
       <div className="mb-1.5 flex items-center justify-between text-[10px] text-slate-400">
@@ -62,7 +86,14 @@ export function Bubble() {
           </span>
           <span className="rounded-full bg-white/10 px-2 py-0.5 text-slate-300">{humanize(q.targets_concept)}</span>
         </div>
-        <button onClick={() => setVisible(false)} className="px-1 text-slate-400 hover:text-white" aria-label="Dismiss">✕</button>
+        <button
+          onClick={() => {
+            setVisible(false);
+            closeBubble();
+          }}
+          className="px-1 text-slate-400 hover:text-white"
+          aria-label="Dismiss"
+        >✕</button>
       </div>
 
       <p className="text-sm leading-snug text-slate-100">{q.question}</p>

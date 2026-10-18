@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
+const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const allowlist_1 = require("./allowlist");
@@ -43,7 +44,12 @@ const panel_1 = require("./panel");
 const redact_1 = require("./redact");
 const SEVERITY = ['error', 'warning', 'info', 'hint'];
 const cfg = () => vscode.workspace.getConfiguration('tutor');
-const folders = () => cfg().get('allowlistedFolders', ['~/tutor-lessons']);
+const folders = () => {
+    const configured = cfg().get('allowlistedFolders', ['~/tutor-lessons']);
+    const ws = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+    const wsLessons = ws.map((f) => path.join(f, 'lessons'));
+    return [...configured, ...ws, ...wsLessons];
+};
 function activate(ctx) {
     const out = vscode.window.createOutputChannel('Tutor');
     const log = (m) => out.appendLine(`[${new Date().toISOString()}] ${m}`);
@@ -52,6 +58,11 @@ function activate(ctx) {
     // ---- UI bits
     const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     bar.command = 'tutor.togglePause';
+    const topicBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
+    topicBar.command = 'tutor.chooseLesson';
+    topicBar.text = '$(book) Topic';
+    topicBar.tooltip = 'Click to choose a lesson topic and open in sandbox';
+    topicBar.show();
     const hintBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
     hintBar.command = 'tutor.reply';
     const renderBar = () => {
@@ -68,7 +79,7 @@ function activate(ctx) {
         bar.show();
     };
     const sid = () => cfg().get('studentId', 'local-user');
-    const panel = new panel_1.TutorPanel((t) => void sendReply(t));
+    const panel = new panel_1.TutorPanel((t) => void sendReply(t), () => void chooseLesson());
     const client = new daemonClient_1.DaemonClient(() => cfg().get('daemonUrl', 'http://localhost:7777'), (c) => void onCommand(c), () => { renderBar(); if (client.connected && !paused) {
         resync();
     } }, log);
@@ -169,9 +180,32 @@ function activate(ctx) {
             return;
         }
         try {
-            await client.postJson('/api/reply', { text: (0, redact_1.redact)(text), student_id: sid() });
+            const payload = {
+                text: (0, redact_1.redact)(text),
+                student_id: sid(),
+            };
+            const ed = vscode.window.activeTextEditor;
+            if (ed && watched(ed.document)) {
+                payload.file = ed.document.uri.fsPath;
+                payload.language = ed.document.languageId;
+                payload.content = (0, redact_1.redact)(ed.document.getText());
+                if (ed.selection) {
+                    payload.cursor = { line: ed.selection.active.line + 1, col: ed.selection.active.character + 1 };
+                    if (!ed.selection.isEmpty) {
+                        payload.selection = {
+                            start: { line: ed.selection.start.line + 1, col: ed.selection.start.character + 1 },
+                            end: { line: ed.selection.end.line + 1, col: ed.selection.end.character + 1 },
+                        };
+                    }
+                }
+            }
+            const res = await client.postJson('/api/reply', payload);
+            if (res && res.question) {
+                panel.show(res.question);
+            }
         }
         catch (e) {
+            panel.showError(String(e));
             vscode.window.showWarningMessage(`Tutor: could not send reply (${e})`);
         }
     }
@@ -266,13 +300,116 @@ function activate(ctx) {
                 log(`unknown command ${c.command}`);
         }
     }
-    ctx.subscriptions.push(vscode.commands.registerCommand('tutor.runTests', runTests), vscode.commands.registerCommand('tutor.togglePause', () => setPaused(!paused)), vscode.commands.registerCommand('tutor.reply', promptReply), vscode.window.registerWebviewViewProvider('tutor.panel', panel, { webviewOptions: { retainContextWhenHidden: true } }), bar, hintBar, out, { dispose: () => client.dispose() });
+    async function chooseLesson() {
+        const wsFolders = vscode.workspace.workspaceFolders || [];
+        let lessonsDir = null;
+        for (const f of wsFolders) {
+            const candidate = path.join(f.uri.fsPath, 'lessons');
+            if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+                lessonsDir = candidate;
+                break;
+            }
+            // Or if current folder is itself inside ps5 or is lessons
+            const candidatePs5 = path.join(f.uri.fsPath, '..', 'lessons');
+            if (fs.existsSync(candidatePs5) && fs.statSync(candidatePs5).isDirectory()) {
+                lessonsDir = path.resolve(candidatePs5);
+                break;
+            }
+        }
+        if (!lessonsDir) {
+            // Default fallback location for the project
+            const fallback = 'C:\\Users\\D Venkata Abhishek\\Desktop\\ps5\\lessons';
+            if (fs.existsSync(fallback)) {
+                lessonsDir = fallback;
+            }
+        }
+        if (!lessonsDir || !fs.existsSync(lessonsDir)) {
+            vscode.window.showErrorMessage('Could not find the lessons/ directory.');
+            return;
+        }
+        // Discover topics from lessons/
+        const entries = fs.readdirSync(lessonsDir, { withFileTypes: true });
+        const items = [];
+        for (const ent of entries) {
+            if (ent.isDirectory() && !ent.name.startsWith('_') && !ent.name.startsWith('.')) {
+                const lessonYamlPath = path.join(lessonsDir, ent.name, 'lesson.yaml');
+                let title = ent.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                let track = 'dsa';
+                if (fs.existsSync(lessonYamlPath)) {
+                    try {
+                        const raw = fs.readFileSync(lessonYamlPath, 'utf8');
+                        const titleMatch = raw.match(/^title:\s*["']?([^"'\r\n]+)/m);
+                        if (titleMatch)
+                            title = titleMatch[1].trim();
+                        const trackMatch = raw.match(/^track:\s*["']?([^"'\r\n]+)/m);
+                        if (trackMatch)
+                            track = trackMatch[1].trim();
+                    }
+                    catch { /* use defaults */ }
+                }
+                items.push({
+                    label: `$(book) ${title}`,
+                    description: track.toUpperCase(),
+                    detail: `Folder: lessons/${ent.name}`,
+                    dirName: ent.name,
+                    fullPath: path.join(lessonsDir, ent.name),
+                });
+            }
+        }
+        if (items.length === 0) {
+            vscode.window.showWarningMessage('No lessons found in ' + lessonsDir);
+            return;
+        }
+        const pick = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Select a lesson topic to open in your sandbox...',
+            matchOnDescription: true,
+            matchOnDetail: true,
+        });
+        if (!pick) {
+            return;
+        }
+        const lessonUri = vscode.Uri.file(pick.fullPath);
+        vscode.window.showInformationMessage(`Opening topic: ${pick.label.replace('$(book) ', '')}`);
+        // If already in a workspace, open the starter file or open the folder
+        const starterDir = path.join(pick.fullPath, 'starter');
+        let targetFile = null;
+        if (fs.existsSync(starterDir)) {
+            const candidates = ['solution.py', 'solution.js', 'solution.go', 'Solution.java', 'design.md'];
+            for (const c of candidates) {
+                const full = path.join(starterDir, c);
+                if (fs.existsSync(full)) {
+                    targetFile = full;
+                    break;
+                }
+            }
+        }
+        // Open the folder in the workspace and reveal the starter solution
+        const isInsideChosenFolder = wsFolders.some(f => f.uri.fsPath.toLowerCase() === pick.fullPath.toLowerCase());
+        if (isInsideChosenFolder) {
+            if (targetFile) {
+                const doc = await vscode.workspace.openTextDocument(targetFile);
+                await vscode.window.showTextDocument(doc);
+            }
+        }
+        else {
+            // If we are in a multi-root or single folder workspace, switch or open folder
+            await vscode.commands.executeCommand('vscode.openFolder', lessonUri, { forceNewWindow: false });
+        }
+    }
+    ctx.subscriptions.push(vscode.commands.registerCommand('tutor.chooseLesson', chooseLesson), vscode.commands.registerCommand('tutor.runTests', runTests), vscode.commands.registerCommand('tutor.togglePause', () => setPaused(!paused)), vscode.commands.registerCommand('tutor.reply', promptReply), vscode.window.registerWebviewViewProvider('tutor.panel', panel, { webviewOptions: { retainContextWhenHidden: true } }), bar, topicBar, hintBar, out, { dispose: () => client.dispose() });
     renderBar();
     client.connect();
     if (paused) {
         void client.postJson('/api/pause', { paused: true }, 3000).catch(() => undefined);
     }
     log(`activated; allowlist=${folders().map(allowlist_1.expandHome).join(', ')}; paused=${paused}`);
+    // If no editor file is currently open or outside lessons, prompt user to pick a topic
+    setTimeout(() => {
+        const activeEd = vscode.window.activeTextEditor;
+        if (!activeEd || !(0, allowlist_1.isAllowed)(activeEd.document.uri.fsPath, folders())) {
+            void chooseLesson();
+        }
+    }, 1000);
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map

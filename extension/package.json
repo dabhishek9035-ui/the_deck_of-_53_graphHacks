@@ -10,6 +10,7 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
+      { "command": "tutor.chooseLesson", "title": "Tutor: Choose Topic / Lesson" },
       { "command": "tutor.runTests", "title": "Tutor: Run Tests" },
       { "command": "tutor.togglePause", "title": "Tutor: Pause / Resume" },
       { "command": "tutor.reply", "title": "Tutor: Reply to the Pet" }

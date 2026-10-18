@@ -7,7 +7,14 @@ class ListNode:
         self.next = next
 
 
-def reverse_list(head: ListNode | None) -> ListNode | None:
-    """Reverse a singly linked list and return the new head. Nodes have .val and .next."""
-    # TODO(student): implement reverse_list
-    raise NotImplementedError("TODO")
+def reverse_list(head):
+    prev = None
+    curr = head
+    while curr is not None:
+        nxt = curr.next
+        curr.next = prev
+        prev = curr
+        curr = nxt
+    return prev
+
+

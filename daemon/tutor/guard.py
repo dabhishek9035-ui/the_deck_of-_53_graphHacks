@@ -49,7 +49,7 @@ RETURN_STATEMENT_PATTERNS = [
 ]
 
 
-def guard_check(output_text: str) -> Tuple[bool, Optional[str]]:
+def guard_check(output_text: str, require_question: bool = True) -> Tuple[bool, Optional[str]]:
     """
     Validate that tutor output strictly obeys Socratic guidelines.
 
@@ -61,6 +61,7 @@ def guard_check(output_text: str) -> Tuple[bool, Optional[str]]:
 
     Args:
         output_text: Natural language string proposed by the LLM.
+        require_question: If True, requires output to contain exactly one question mark.
 
     Returns:
         (is_safe, failure_reason)
@@ -93,5 +94,13 @@ def guard_check(output_text: str) -> Tuple[bool, Optional[str]]:
         match = pattern.search(text)
         if match:
             return False, f"Contains code return statement: '{match.group(0)}'"
+
+    # Rule 5: Question check if required
+    q_count = text.count("?")
+    if require_question:
+        if q_count == 0:
+            return False, "Output is not a question (missing '?')"
+        if q_count > 1:
+            return False, f"Output contains multiple questions ({q_count} '?'), expected exactly one"
 
     return True, None

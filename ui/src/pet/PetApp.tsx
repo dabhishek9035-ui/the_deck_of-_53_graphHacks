@@ -20,8 +20,10 @@ export function PetApp() {
   const variant = evo?.variant ?? 'blob';
   const stage = evo?.stage ?? 1;
 
+  const toggleBubble = useStore((s) => s.toggleBubble);
+
   useHitRects();
-  const pointer = usePetPointer(openDashboard);
+  const pointer = usePetPointer(openDashboard, toggleBubble);
 
   useEffect(() => { preloadArt(variant, stage); }, [variant, stage]);
 

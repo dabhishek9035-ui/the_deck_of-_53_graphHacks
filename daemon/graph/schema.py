@@ -119,49 +119,39 @@ def init_schema(
     # 1. Setup unique constraints for Student, Lesson, Concept, and Mistake nodes
     for label in UNIQUE_NODE_LABELS:
         # Step 1a: Create supporting range index on (label.id)
-        # FalkorDB requires a range index on the property before enforcing a unique constraint.
-        index_query = f"CREATE INDEX FOR (n:{label}) ON (n.id)"
-        try:
-            graph.query(index_query)
-            summary["indexes_created"].append(f"{label}.id")
-            logger.info("Created supporting index for %s(id)", label)
-        except Exception as e:
-            if _is_already_exists_error(e):
-                logger.debug("Index for %s(id) already exists", label)
-            else:
-                logger.warning("Index creation notice for %s(id): %s", label, e)
+        if hasattr(graph, "create_node_range_index"):
+            try:
+                graph.create_node_range_index(label, "id")
+                summary["indexes_created"].append(f"{label}.id")
+            except Exception as e:
+                if not _is_already_exists_error(e):
+                    logger.debug("Range index note for %s(id): %s", label, e)
+        else:
+            index_query = f"CREATE INDEX FOR (n:{label}) ON (n.id)"
+            try:
+                graph.query(index_query)
+                summary["indexes_created"].append(f"{label}.id")
+            except Exception as e:
+                if not _is_already_exists_error(e):
+                    logger.debug("Index query note for %s(id): %s", label, e)
 
         # Step 1b: Create unique constraint
-        # openCypher syntax: CREATE CONSTRAINT FOR (n:Label) REQUIRE n.id IS UNIQUE
-        constraint_query = f"CREATE CONSTRAINT FOR (n:{label}) REQUIRE n.id IS UNIQUE"
-        try:
-            graph.query(constraint_query)
-            summary["constraints_created"].append(f"{label}.id")
-            logger.info("Created unique constraint for %s(id)", label)
-        except Exception as e:
-            if _is_already_exists_error(e):
-                logger.debug("Constraint for %s(id) already exists", label)
-            else:
-                # Fallback to driver-level create_constraint if available
-                created = False
-                client = getattr(graph, "client", None) or getattr(graph, "connection", None)
-                graph_name = getattr(graph, "name", DEFAULT_GRAPH_NAME)
-
-                if client and hasattr(client, "create_constraint"):
-                    try:
-                        client.create_constraint(graph_name, "UNIQUE", "NODE", label, ["id"])
-                        summary["constraints_created"].append(f"{label}.id")
-                        created = True
-                        logger.info("Created unique constraint for %s(id) via client fallback", label)
-                    except Exception as fallback_err:
-                        if _is_already_exists_error(fallback_err):
-                            logger.debug("Constraint for %s(id) already exists", label)
-                            created = True
-
-                if not created:
-                    err_msg = f"Failed to create unique constraint for {label}.id: {e}"
-                    logger.error(err_msg)
-                    summary["errors"].append(err_msg)
+        if hasattr(graph, "create_node_unique_constraint"):
+            try:
+                graph.create_node_unique_constraint(label, "id")
+                summary["constraints_created"].append(f"{label}.id")
+                logger.info("Created unique constraint for %s(id)", label)
+            except Exception as e:
+                if not _is_already_exists_error(e):
+                    logger.debug("Unique constraint note for %s(id): %s", label, e)
+        else:
+            try:
+                constraint_query = f"CREATE CONSTRAINT FOR (n:{label}) REQUIRE n.id IS UNIQUE"
+                graph.query(constraint_query)
+                summary["constraints_created"].append(f"{label}.id")
+            except Exception as e:
+                if not _is_already_exists_error(e):
+                    logger.debug("Constraint note for %s(id): %s", label, e)
 
     # 2. Setup Vector index on Chunk nodes for the embedding property
     vector_query = (

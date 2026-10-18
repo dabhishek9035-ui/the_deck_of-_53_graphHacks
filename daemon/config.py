@@ -60,15 +60,24 @@ class Config(BaseModel):
     voice: VoiceCfg = Field(default_factory=VoiceCfg)
 
     def allowlist(self) -> list[Path]:
-        return [Path(p).expanduser().resolve() for p in self.allowlisted_paths]
+        paths = [Path(p).expanduser().resolve() for p in self.allowlisted_paths]
+        # Always allow repo lessons folder if present
+        repo_root = Path(__file__).resolve().parents[1]
+        repo_lessons = repo_root / "lessons"
+        if repo_lessons.is_dir() and repo_lessons not in paths:
+            paths.append(repo_lessons)
+        return paths
 
     def is_allowed(self, file: str) -> bool:
-        """True only for files inside an allowlisted folder (and not obvious secret files)."""
+        """True only for files inside lesson/{topic}/starter (and not obvious secret files)."""
         if not file:
             return False
         p = Path(file).expanduser().resolve()
         name = p.name.lower()
         if name.startswith(".env") or name.endswith((".pem", ".key")):
+            return False
+        parts = [part.lower() for part in p.parts]
+        if "starter" not in parts:
             return False
         return any(p == r or r in p.parents for r in self.allowlist())
 

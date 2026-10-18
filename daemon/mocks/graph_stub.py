@@ -16,8 +16,8 @@ def update_mastery(*a, **kw):
     return None
 
 
-def get_progress(student_id):
-    return {"student_id": student_id, "mastery": [
+def get_progress(student_id, mode=None):
+    return {"student_id": student_id, "mode": mode or "dsa", "mastery": [
         {"concept_id": "array_indexing", "score": 0.4},
         {"concept_id": "loop_invariants", "score": 0.2},
         {"concept_id": "binary_search", "score": 0.1}]}

@@ -48,12 +48,13 @@ if (-not $falkorOnline) {
     Write-Host "[*] FalkorDB not reachable on 6379. Attempting docker-compose..." -ForegroundColor Yellow
     try {
         docker compose up -d falkordb 2>&1 | Out-Null
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 3
         Write-Host "[OK] FalkorDB container launched via docker compose." -ForegroundColor Green
         $falkorOnline = $true
     } catch {
-        Write-Host "[WARN] Docker not available or failed to start FalkorDB." -ForegroundColor DarkYellow
-        Write-Host "       The daemon will automatically use its built-in in-memory graph adapter with persistent disk caching." -ForegroundColor DarkYellow
+        Write-Host "[ERROR] Docker not available or failed to start FalkorDB." -ForegroundColor Red
+        Write-Host "        FalkorDB is required! Socratic Code-Tutor Pet cannot operate without FalkorDB on localhost:6379." -ForegroundColor Red
+        exit 1
     }
 }
 
@@ -96,16 +97,24 @@ try {
 
 # 7. Start UI
 Write-Host "`n[*] Launching Socratic Pet UI..." -ForegroundColor Yellow
-$tauriExe = "ui\src-tauri\target\release\tutor-pet.exe"
-if (-not $DevUI -and (Test-Path $tauriExe)) {
-    Write-Host "[OK] Starting Tauri native desktop app..." -ForegroundColor Green
-    Start-Process $tauriExe
+$tauriRelease = "ui\src-tauri\target\release\tutor-pet.exe"
+$tauriDebug = "ui\src-tauri\target\debug\tutor-pet.exe"
+$petExe = $null
+
+if (-not $DevUI) {
+    if (Test-Path $tauriRelease) { $petExe = $tauriRelease }
+    elseif (Test-Path $tauriDebug) { $petExe = $tauriDebug }
+}
+
+if ($petExe) {
+    Write-Host "[OK] Starting Tauri native desktop app ($petExe)..." -ForegroundColor Green
+    Start-Process $petExe
 } else {
-    Write-Host "[OK] Starting UI via Vite server (supports all browsers and live reload)..." -ForegroundColor Green
+    Write-Host "[OK] Starting UI via Vite server (open in browser or run 'npm run tauri dev' in ui/)..." -ForegroundColor Green
     $uiProc = Start-Process npm -ArgumentList "run dev -- --host 127.0.0.1" -WorkingDirectory "ui" -PassThru -NoNewWindow
     Start-Sleep -Seconds 2
-    Start-Process "http://localhost:5173"
-    Start-Process "http://localhost:5173/dashboard.html"
+    Start-Process "http://localhost:1420"
+    Start-Process "http://localhost:1420/dashboard.html"
 }
 
 Write-Host "`n==========================================================" -ForegroundColor Cyan
