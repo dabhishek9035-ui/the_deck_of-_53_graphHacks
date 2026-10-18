@@ -1,4 +1,4 @@
-﻿# Socratic Code-Tutor Pet
+﻿# Pengu-learn
 
 A local desktop coding tutor with a Python daemon, a React/Tauri interface, and a FalkorDB knowledge graph. The graph connects lessons, programming concepts, prerequisite relationships, common mistakes, and student progress. The daemon and database bind to loopback by default.
 
